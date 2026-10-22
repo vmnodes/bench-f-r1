@@ -1,0 +1,24 @@
+{
+  "apiVersion": "vmnodes.com/v1",
+  "kind": "Extension",
+  "metadata": {
+    "name": "starter",
+    "version": "0.1.0",
+    "publisher": "your-org",
+    "description": "A team noticeboard: the smallest app that passes the VMnodes platform"
+  },
+  "runtime": {
+    "image": "SET-AT-RELEASE@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "port": 3000,
+    "healthEndpoint": "/health",
+    "database": false,
+    "resources": { "cpu": "100m", "memory": "128Mi" }
+  },
+  "data": {
+    "publishes": ["starter.note/v1"],
+    "consumes": []
+  },
+  "permissions": {
+    "templates": ["starter.editor"]
+  }
+}

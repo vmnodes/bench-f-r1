@@ -1,0 +1,11 @@
+{
+  "apiVersion": "vmnodes.com/v1",
+  "roles": [
+    {
+      "name": "starter.editor",
+      "description": "Can post and edit messages."
+    }
+  ],
+  "database": true,
+  "publishes": ["note/v1"]
+}

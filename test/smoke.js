@@ -140,6 +140,43 @@ function tryBind(port) {
   const readerPage = await request(`${portal.issuer}/`);
   check("a reader's page has no post form", !/<form/.test(readerPage.body), true);
 
+  // --- 5b. Pinning: only editors, pinned notes stay on top --------------------
+  const noteTexts = async () => (await request(`${app.url}/api/notes`, { headers: await reader() })).json().items;
+  const pinReq = (headers, id, action, prefix = "/api/notes") => request(`${app.url}${prefix}/${id}/${action}`, { method: "POST", headers });
+  await post(await editor(), "Second note");
+  await post(await editor(), "Third note");
+  const items0 = await noteTexts();
+  check("CONTROL: newest note first before any pin", items0.map((n) => n.text)[0], "Third note");
+  check("notes start unpinned", items0.every((n) => n.pinned === false), true);
+  const oldest = items0.find((n) => n.text.startsWith("Fire drill"));
+  check("a reader cannot pin -> 403", (await pinReq(await reader(), oldest.id, "pin")).status, 403);
+  check("...and the note is still not pinned", (await noteTexts()).find((n) => n.id === oldest.id).pinned, false);
+  check("no sign-in cannot pin -> 401", (await pinReq({}, oldest.id, "pin")).status, 401);
+  check("a reader cannot pin through the page form route either -> 403", (await pinReq(await reader(), oldest.id, "pin", "/notes")).status, 403);
+  const pinned = await pinReq(await editor(), oldest.id, "pin");
+  check("CONTROL: an editor can pin -> 200", [pinned.status, pinned.json().pinned], [200, true]);
+  const items1 = await noteTexts();
+  check("the pinned (oldest) note is now first", items1[0].id, oldest.id);
+  check("...and the others keep newest-first order after it", items1.slice(1).map((n) => n.text), ["Third note", "Second note"]);
+  await pinReq(await editor(), items0[1].id, "pin"); // pin "Second note"
+  check("two pinned notes both sit above the unpinned one, newest pin-target first", (await noteTexts()).map((n) => n.text.slice(0, 6)), ["Second", "Fire d", "Third "]);
+  check("a reader cannot unpin -> 403", (await pinReq(await reader(), oldest.id, "unpin")).status, 403);
+  check("...and it is still pinned", (await noteTexts()).find((n) => n.id === oldest.id).pinned, true);
+  check("an editor can unpin -> 200", (await pinReq(await editor(), oldest.id, "unpin")).status, 200);
+  check("...and it drops back to its place", (await noteTexts()).map((n) => n.text.slice(0, 6)), ["Second", "Third ", "Fire d"]);
+  check("pinning an unknown note -> 404", (await pinReq(await editor(), "00000000-0000-4000-8000-000000000000", "pin")).status, 404);
+  check("pinning something that is not an id -> 404, not a crash", (await pinReq(await editor(), "nope", "pin")).status, 404);
+  portal.setUser("editor");
+  const pinPage = await request(`${portal.issuer}/`);
+  check("an editor's page has a Pin note button and a Pinned marker", [/Pin note/.test(pinPage.body), /Pinned/.test(pinPage.body)], [true, true]);
+  const formPin = await request(`${portal.issuer}/notes/${oldest.id}/pin`, { method: "POST" });
+  check("the page's pin form answers 303 and pins", [formPin.status, (await noteTexts()).find((n) => n.id === oldest.id).pinned], [303, true]);
+  portal.setUser("reader");
+  const readerPinPage = await request(`${portal.issuer}/`);
+  check("a reader sees Pinned but no pin buttons", [/Pinned/.test(readerPinPage.body), /Pin note|Unpin note/.test(readerPinPage.body)], [true, false]);
+  await pinReq(await editor(), oldest.id, "unpin");
+  await pinReq(await editor(), items0[1].id, "unpin");
+
   // --- 6. Portal unreachable -> 503, not 401 (it is not the user's fault) -----
   const dead = await holdDeadPort();
   check("the dead portal's port is held: no other server can answer in its place", await tryBind(dead.port), "EADDRINUSE");
@@ -176,6 +213,7 @@ function tryBind(port) {
   const apiUrl = `http://127.0.0.1:${api.address().port}`;
   const pubEnv = { VMNODES_PORTAL_URL: portal.issuer, VMNODES_APP_ID: APP_ID, VMNODES_API_URL: apiUrl, VMNODES_PUBLISH_TOKEN: "smoke-test-publish" };
   const postTo = async (url, text) => request(`${url}/api/notes`, { method: "POST", headers: { ...(await editor()), "content-type": "application/json" }, body: JSON.stringify({ text }) });
+  const pinReq2 = (url, headers, id, action) => request(`${url}/api/notes/${id}/${action}`, { method: "POST", headers });
   const publishes = async (n) => { for (let i = 0; i < 100 && modes.length < n; i++) await new Promise((r) => setTimeout(r, 20)); return modes.length; };
 
   const before = await startApp(pubEnv);
@@ -251,6 +289,24 @@ function tryBind(port) {
       check("the snapshot after a restart carries BOTH notes, so nothing shared is deleted", shared.size, 2);
       check("...and every publish was a snapshot", modes, ["snapshot", "snapshot"]);
       second.child.kill(); await new Promise((r) => (second.child.exitCode !== null ? r() : second.child.once("exit", r)));
+      // Pinning on a database the OLD version (0.1.0) made: a literal copy of its table, no pinned column.
+      await sql`drop table notes`;
+      await sql`create table notes (seq bigserial primary key, id uuid not null unique, text text not null, author_id text not null, author_name text not null, posted_at timestamptz not null)`;
+      await sql`insert into notes (id, text, author_id, author_name, posted_at) values
+        ('11111111-1111-4111-8111-111111111111', 'Old note A', 'u', 'Old Author', '2026-09-01T00:00:00Z'),
+        ('22222222-2222-4222-8222-222222222222', 'Old note B', 'u', 'Old Author', '2026-09-02T00:00:00Z')`;
+      const upgraded = await startApp(dbEnv);
+      check("CONTROL: the new version starts on the old version's database", typeof upgraded.url, "string");
+      const oldItems = (await request(`${upgraded.url}/api/notes`, { headers: await reader() })).json().items;
+      check("no existing note was lost, and none is pinned", [oldItems.map((n) => n.text), oldItems.every((n) => n.pinned === false)], [["Old note B", "Old note A"], true]);
+      check("an editor can pin an old note in postgres", (await pinReq2(upgraded.url, await editor(), "11111111-1111-4111-8111-111111111111", "pin")).status, 200);
+      const afterPin = (await request(`${upgraded.url}/api/notes`, { headers: await reader() })).json().items;
+      check("the pinned old note comes first in postgres", afterPin.map((n) => n.text), ["Old note A", "Old note B"]);
+      check("a reader cannot pin in postgres -> 403 and nothing changes", [(await pinReq2(upgraded.url, await reader(), "22222222-2222-4222-8222-222222222222", "pin")).status, (await request(`${upgraded.url}/api/notes`, { headers: await reader() })).json().items.map((n) => n.pinned)], [403, [true, false]]);
+      upgraded.child.kill(); await new Promise((r) => (upgraded.child.exitCode !== null ? r() : upgraded.child.once("exit", r)));
+      const restarted = await startApp(dbEnv);
+      check("a pin survives a restart (and the migration runs twice without harm)", (await request(`${restarted.url}/api/notes`, { headers: await reader() })).json().items.map((n) => n.text), ["Old note A", "Old note B"]);
+      restarted.child.kill(); await new Promise((r) => (restarted.child.exitCode !== null ? r() : restarted.child.once("exit", r)));
       await sql`drop table if exists notes`;
       postgresRan = true;
     }
@@ -262,7 +318,7 @@ function tryBind(port) {
 
   // --- 11. The count itself: zero checks run must never read as a pass ---------
   console.log(`postgres=${postgresRan ? "ran" : "skipped"}`);
-  const FLOOR = 40;
+  const FLOOR = 55;
   if (pass + fail < FLOOR) { console.log(`FAIL only ${pass + fail} checks ran, expected at least ${FLOOR}`); fail++; }
   console.log(`\npassed=${pass} failed=${fail}`);
   finish(fail === 0 ? 0 : 1);

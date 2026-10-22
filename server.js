@@ -64,6 +64,7 @@ const KEPT = {
   memory: "Notes are kept in memory, so they are cleared when the app restarts or is updated.",
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function send(res, status, body, type = "application/json") {
@@ -83,13 +84,13 @@ function readBody(req, limit = 64 * 1024) {
 function page(user, notes) {
   const canPost = user.roles.includes(EDITOR_ROLE);
   const list = notes.length
-    ? notes.map((n) => `<li><p>${esc(n.text)}</p><small>${esc(n.authorName)} · ${esc(n.postedAt)}</small></li>`).join("")
+    ? notes.map((n) => `<li${n.pinned ? ' class="pinned"' : ""}>${n.pinned ? '<strong class="pin">Pinned</strong>' : ""}<p>${esc(n.text)}</p><small>${esc(n.authorName)} · ${esc(n.postedAt)}</small>${canPost ? `<form method="post" action="/notes/${esc(n.id)}/${n.pinned ? "unpin" : "pin"}"><button type="submit" class="small">${n.pinned ? "Unpin note" : "Pin note"}</button></form>` : ""}</li>`).join("")
     : "<li><p>No notes yet.</p></li>";
   const form = canPost
     ? `<form method="post" action="/notes"><label for="t">New note</label><textarea id="t" name="text" required maxlength="500"></textarea><button type="submit">Post note</button></form>`
     : `<p>You can read notes. Posting needs the <code>${esc(EDITOR_ROLE)}</code> role. Ask whoever runs this app to give it to you.</p>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Noticeboard</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0c10;color:#e8e8ee;max-width:640px;margin:0 auto;padding:16px}ul{list-style:none;padding:0}li{border-bottom:1px solid #2a2c35;padding:8px 0}small{color:#9a9cab}textarea{width:100%;min-height:80px;background:#15161c;color:inherit;border:1px solid #2a2c35;border-radius:6px;padding:8px;box-sizing:border-box}button{margin-top:8px;background:#5b5bd6;color:#fff;border:0;border-radius:6px;padding:10px 16px;font:inherit}code{font-family:ui-monospace,monospace}</style></head>
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0c10;color:#e8e8ee;max-width:640px;margin:0 auto;padding:16px}ul{list-style:none;padding:0}li{border-bottom:1px solid #2a2c35;padding:8px 0}small{color:#9a9cab}textarea{width:100%;min-height:80px;background:#15161c;color:inherit;border:1px solid #2a2c35;border-radius:6px;padding:8px;box-sizing:border-box}button{margin-top:8px;background:#5b5bd6;color:#fff;border:0;border-radius:6px;padding:10px 16px;font:inherit}code{font-family:ui-monospace,monospace}li.pinned{border-left:3px solid #5b5bd6;padding-left:8px}.pin{color:#b8b8ff}button.small{margin-top:4px;padding:4px 10px;background:#2a2c35}</style></head>
 <body><h1>Noticeboard</h1><p id="who">Signed in as <strong>${esc(user.name || user.email)}</strong> (${esc(user.email)})</p><ul id="notes">${list}</ul>${form}<p id="kept"><small>${esc(KEPT[store.kind])}</small></p></body></html>`;
 }
 
@@ -121,6 +122,17 @@ async function handle(req, res) {
     publishLatest();
     if (url.pathname === "/notes") { res.writeHead(303, { location: "/" }); return res.end(); }
     return send(res, 201, note);
+  }
+
+  // Pin or unpin: POST /notes/<id>/pin, /notes/<id>/unpin (the page's buttons) or the same under /api/notes.
+  const pinRoute = /^(\/api)?\/notes\/([^/]+)\/(pin|unpin)$/.exec(url.pathname);
+  if (pinRoute && req.method === "POST") {
+    identity.requireRole(user, EDITOR_ROLE); // same role as posting, checked on the SERVER
+    const [, api, id, action] = pinRoute;
+    const found = UUID.test(id) && await store.setPinned(id.toLowerCase(), action === "pin");
+    if (!found) return send(res, 404, { error: "note not found" });
+    if (!api) { res.writeHead(303, { location: "/" }); return res.end(); }
+    return send(res, 200, { id: id.toLowerCase(), pinned: action === "pin" });
   }
 
   return send(res, 404, { error: "not found" });

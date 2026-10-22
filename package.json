@@ -1,6 +1,6 @@
 {
   "name": "vmnodes-starter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "The smallest app that passes the VMnodes platform: sign-in, one published record type, health, a Dockerfile.",
   "main": "server.js",
